@@ -19,7 +19,7 @@ def find_lua_patterns():
     try:
         # Buscar el proceso de Roblox
         for proc in psutil.process_iter(['pid', 'name']):
-            if proc.info['name'] == "RobloxPlayerBeta.exe":
+            if proc.info['name'] in ["RobloxPlayerBeta.exe", "ROBLOXCORPORATION.ROBLOX_2.667.665.0_x64__55nm5eh3cm0pr"]:
                 print(f"Proceso encontrado: {proc.info['name']} (PID: {proc.info['pid']})")
                 
                 # Conectar al proceso
