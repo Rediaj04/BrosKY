@@ -1,107 +1,301 @@
 import pymem
-import pymem.process
 import psutil
-import struct
 import time
-import json
+import os
+import ctypes
+import sys
+from ctypes import wintypes, windll, create_string_buffer, Structure, sizeof, POINTER, c_void_p, c_ulong, c_ulonglong, c_size_t, c_uint64, c_uint32
+import win32gui
+import win32process
+import win32con
+import win32security
 
-def find_lua_patterns():
-    print("Buscando patrones de Lua...")
-    
-    # Patrones comunes de Lua 5.1
-    LUA_PATTERNS = [
-        b"Lua 5.1",
-        b"LuaQ",
-        b"luaL_loadbuffer",
-        b"lua_pcall"
+PROCESS_ALL_ACCESS = (0x000F0000 | 0x00100000 | 0xFFF)
+PROCESS_VM_READ = 0x0010
+PROCESS_QUERY_INFORMATION = 0x0400
+
+def ptr_to_int(ptr):
+    """Convierte un puntero a entero."""
+    if isinstance(ptr, int):
+        return ptr
+    if ptr is None:
+        return 0
+    try:
+        return c_uint32.from_buffer(ctypes.cast(ptr, POINTER(c_uint32))).value
+    except:
+        return 0
+
+class SYSTEM_INFO(Structure):
+    _fields_ = [
+        ("wProcessorArchitecture", wintypes.WORD),
+        ("wReserved", wintypes.WORD),
+        ("dwPageSize", wintypes.DWORD),
+        ("lpMinimumApplicationAddress", c_void_p),
+        ("lpMaximumApplicationAddress", c_void_p),
+        ("dwActiveProcessorMask", c_ulong),
+        ("dwNumberOfProcessors", wintypes.DWORD),
+        ("dwProcessorType", wintypes.DWORD),
+        ("dwAllocationGranularity", wintypes.DWORD),
+        ("wProcessorLevel", wintypes.WORD),
+        ("wProcessorRevision", wintypes.WORD)
     ]
+
+class MEMORY_BASIC_INFORMATION(Structure):
+    _fields_ = [
+        ("BaseAddress", c_void_p),
+        ("AllocationBase", c_void_p),
+        ("AllocationProtect", wintypes.DWORD),
+        ("RegionSize", c_uint32),
+        ("State", wintypes.DWORD),
+        ("Protect", wintypes.DWORD),
+        ("Type", wintypes.DWORD)
+    ]
+
+def is_admin():
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
+
+def get_process_handle(pid):
+    try:
+        # Obtener el token actual
+        token = win32security.OpenProcessToken(
+            win32process.GetCurrentProcess(),
+            win32con.TOKEN_ADJUST_PRIVILEGES | win32con.TOKEN_QUERY
+        )
+        
+        # Habilitar el privilegio de depuración
+        priv_id = win32security.LookupPrivilegeValue(None, "SeDebugPrivilege")
+        win32security.AdjustTokenPrivileges(
+            token, 0, [(priv_id, win32con.SE_PRIVILEGE_ENABLED)]
+        )
+        
+        # Intentar obtener el handle con privilegios mínimos necesarios
+        handle = windll.kernel32.OpenProcess(
+            PROCESS_VM_READ | PROCESS_QUERY_INFORMATION,
+            False,
+            pid
+        )
+        
+        if handle:
+            return handle
+        else:
+            error = windll.kernel32.GetLastError()
+            print(f"Error al obtener handle: {error}")
+    except Exception as e:
+        print(f"Error al obtener handle: {e}")
+    return None
+
+def enum_windows_callback(hwnd, results):
+    if win32gui.IsWindowVisible(hwnd):
+        title = win32gui.GetWindowText(hwnd)
+        if "roblox" in title.lower():
+            try:
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                results.append({
+                    'hwnd': hwnd,
+                    'title': title,
+                    'pid': pid
+                })
+                print(f"Ventana de Roblox encontrada: {title}")
+                print(f"HWND: {hwnd}")
+                print(f"PID: {pid}")
+            except Exception as e:
+                print(f"Error al obtener información de la ventana: {e}")
+    return True
+
+def find_roblox_processes():
+    print("Buscando procesos de Roblox...")
+    roblox_processes = []
+    
+    # Buscar ventanas de Roblox
+    print("\nBuscando ventanas de Roblox:")
+    window_results = []
+    win32gui.EnumWindows(enum_windows_callback, window_results)
+    
+    # Buscar procesos por nombre y ruta
+    print("\nBuscando procesos de Roblox:")
+    for proc in psutil.process_iter(['pid', 'name', 'exe']):
+        try:
+            # Forzar actualización del uso de CPU
+            cpu = proc.cpu_percent(interval=0.1)
+            
+            if ("Windows10Universal" in proc.name() or 
+                "Roblox" in proc.name() or 
+                (proc.exe() and ("roblox" in proc.exe().lower() or "windows10universal" in proc.exe().lower()))):
+                
+                print(f"\nProceso encontrado: {proc.name()} (PID: {proc.pid})")
+                print(f"Ejecutable: {proc.exe()}")
+                print(f"CPU: {cpu}%")
+                print(f"Memoria: {proc.memory_info().rss / 1024 / 1024:.2f} MB")
+                
+                if proc.pid not in [p['pid'] for p in roblox_processes]:
+                    handle = get_process_handle(proc.pid)
+                    if handle:
+                        roblox_processes.append({
+                            'pid': proc.pid,
+                            'name': proc.name(),
+                            'exe': proc.exe(),
+                            'cpu': cpu,
+                            'handle': handle
+                        })
+                    else:
+                        print("No se pudo obtener acceso al proceso")
+                
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+            continue
+    
+    return roblox_processes
+
+def read_memory(handle, address, size):
+    buffer = create_string_buffer(size)
+    bytes_read = c_size_t()
+    
+    # Convertir la dirección a entero si es necesario
+    if not isinstance(address, int):
+        address = ptr_to_int(address)
+    
+    # Asegurarse de que el tamaño no sea demasiado grande
+    size = min(size, 0x1000)  # Limitar a 4KB por lectura
+    
+    if windll.kernel32.ReadProcessMemory(
+        handle, 
+        address, 
+        buffer, 
+        size, 
+        ctypes.byref(bytes_read)
+    ):
+        return buffer.raw[:bytes_read.value]
+    return None
+
+def scan_memory(process_info):
+    pid = process_info['pid']
+    handle = process_info['handle']
+    
+    print(f"\nEscaneando memoria del proceso {process_info['name']} (PID: {pid})...")
+    
+    if not handle:
+        print("No se pudo obtener acceso al proceso")
+        return
     
     try:
-        # Buscar el proceso de Roblox
-        for proc in psutil.process_iter(['pid', 'name']):
-            if proc.info['name'] in ["RobloxPlayerBeta.exe", "ROBLOXCORPORATION.ROBLOX_2.667.665.0_x64__55nm5eh3cm0pr"]:
-                print(f"Proceso encontrado: {proc.info['name']} (PID: {proc.info['pid']})")
-                
-                # Conectar al proceso
-                pm = pymem.Pymem(proc.info['pid'])
-                
-                # Resultados
-                results = {
-                    "lua_addresses": [],
-                    "potential_states": [],
-                    "memory_regions": []
-                }
-                
-                # Escanear la memoria
-                print("Escaneando memoria...")
-                current_address = 0
-                while True:
-                    try:
-                        # Leer memoria en bloques
-                        mem = pm.read_bytes(current_address, 4096)
-                        
-                        # Buscar patrones
-                        for pattern in LUA_PATTERNS:
-                            if pattern in mem:
-                                offset = mem.index(pattern)
-                                addr = current_address + offset
-                                print(f"Patrón encontrado: {pattern} en 0x{addr:X}")
-                                results["lua_addresses"].append({
-                                    "address": hex(addr),
-                                    "pattern": pattern.decode('utf-8', errors='ignore')
-                                })
-                                
-                        # Buscar posibles estados de Lua
-                        for i in range(0, len(mem) - 8, 4):
-                            value = struct.unpack("Q", mem[i:i+8])[0]
-                            if 0x100000000 <= value <= 0x7FFFFFFFFFFF:
-                                results["potential_states"].append(hex(current_address + i))
-                                
-                        current_address += 4096
-                        
-                    except (pymem.exception.MemoryReadError, ValueError):
-                        # Guardar región de memoria
-                        if len(results["lua_addresses"]) > 0:
-                            results["memory_regions"].append({
-                                "start": hex(current_address - 4096),
-                                "end": hex(current_address)
-                            })
-                        current_address += 4096
-                        
-                    except Exception as e:
-                        print(f"Error: {str(e)}")
-                        break
-                        
-                # Guardar resultados
-                with open("memory_scan_results.json", "w") as f:
-                    json.dump(results, f, indent=4)
-                    
-                print("\nResultados guardados en memory_scan_results.json")
-                return results
-                
-        print("Proceso de Roblox no encontrado")
-        return None
+        # Patrones comunes de Lua y Roblox
+        patterns = [
+            b"Lua 5.1",
+            b"LuaQ",
+            b"luaL_loadbuffer",
+            b"lua_pcall",
+            b"lua_getfield",
+            b"lua_setfield",
+            b"lua_getglobal",
+            b"lua_setglobal",
+            b"ROBLOX",
+            b"RobloxPlayer",
+            b"RobloxGame",
+            b"rbxasset://",
+            b"game:",
+            b"workspace",
+            b"Players",
+            b"LocalPlayer",
+            b"Character"
+        ]
         
+        # Obtener información del sistema
+        sys_info = SYSTEM_INFO()
+        windll.kernel32.GetSystemInfo(ctypes.byref(sys_info))
+        
+        # Información de memoria
+        mbi = MEMORY_BASIC_INFORMATION()
+        current_address = 0
+        max_address = ptr_to_int(sys_info.lpMaximumApplicationAddress)
+        
+        print("Escaneando regiones de memoria...")
+        while current_address < max_address:
+            if windll.kernel32.VirtualQueryEx(
+                handle,
+                current_address,
+                ctypes.byref(mbi),
+                ctypes.sizeof(mbi)
+            ):
+                base_address = ptr_to_int(mbi.BaseAddress)
+                region_size = mbi.RegionSize
+                
+                if (mbi.State == win32con.MEM_COMMIT and 
+                    mbi.Type == win32con.MEM_PRIVATE and 
+                    mbi.Protect & win32con.PAGE_READWRITE):
+                    
+                    try:
+                        # Leer la región de memoria en bloques más pequeños
+                        block_size = 0x1000  # 4KB por bloque
+                        for offset in range(0, region_size, block_size):
+                            mem = read_memory(handle, base_address + offset, block_size)
+                            if mem:
+                                # Buscar patrones
+                                for pattern in patterns:
+                                    pos = 0
+                                    while True:
+                                        pos = mem.find(pattern, pos)
+                                        if pos == -1:
+                                            break
+                                            
+                                        addr = base_address + offset + pos
+                                        print(f"Patrón encontrado: {pattern.decode(errors='ignore')} en 0x{addr:X}")
+                                        
+                                        # Intentar leer contexto
+                                        context = read_memory(handle, addr - 16, 64)
+                                        if context:
+                                            print(f"Contexto: {context.hex()}")
+                                        
+                                        pos += len(pattern)
+                    except Exception as e:
+                        print(f"Error al leer región 0x{base_address:X}: {str(e)}")
+                
+                current_address = base_address + region_size
+            else:
+                current_address += 4096  # Página por defecto
+                
     except Exception as e:
-        print(f"Error: {str(e)}")
-        return None
+        print(f"Error al escanear memoria: {str(e)}")
+    finally:
+        if handle:
+            windll.kernel32.CloseHandle(handle)
 
 def main():
+    if not is_admin():
+        print("ADVERTENCIA: El script no se está ejecutando como administrador")
+        print("Para mejor acceso a la memoria, ejecuta el script como administrador")
+        if sys.platform == 'win32':
+            print("Intentando reiniciar con privilegios de administrador...")
+            try:
+                ctypes.windll.shell32.ShellExecuteW(
+                    None, "runas", sys.executable, " ".join(sys.argv), None, 1
+                )
+                sys.exit()
+            except:
+                print("No se pudo obtener privilegios de administrador")
+                return
+    
     print("Iniciando escáner de memoria...")
-    print("Por favor, asegúrate de que el juego esté abierto.")
+    print("Por favor, asegúrate de que Roblox esté abierto y en un juego.")
     time.sleep(2)
     
-    results = find_lua_patterns()
+    # Buscar procesos de Roblox
+    processes = find_roblox_processes()
     
-    if results and len(results["lua_addresses"]) > 0:
-        print("\nPatrones encontrados:")
-        for addr in results["lua_addresses"]:
-            print(f"- {addr['pattern']} en {addr['address']}")
-            
-        print("\nPosibles estados de Lua:", len(results["potential_states"]))
-        print("Regiones de memoria escaneadas:", len(results["memory_regions"]))
+    if processes:
+        print(f"\nEncontrados {len(processes)} procesos relacionados con Roblox")
+        # Escanear memoria de cada proceso
+        for proc in processes:
+            scan_memory(proc)
     else:
-        print("No se encontraron patrones de Lua")
+        print("\nNo se pudo encontrar ningún proceso de Roblox")
+        print("Asegúrate de que Roblox esté abierto y en un juego")
+        print("\nSugerencias:")
+        print("1. Abre Roblox y únete a un juego")
+        print("2. Espera a que el juego cargue completamente")
+        print("3. Ejecuta este script como administrador")
+        print("4. Si usas la versión de Microsoft Store, considera usar la versión del sitio web")
 
 if __name__ == "__main__":
     main() 
