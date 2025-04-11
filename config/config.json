@@ -1,0 +1,16 @@
+{
+    "game_process": "RobloxPlayerBeta.exe",
+    "injection_method": "loadlibrary",
+    "bypass_anticheat": false,
+    "auto_attach": true,
+    "memory_address": "0x400000",
+    "script_execution_address": "0x1000000",
+    "hook_functions": [
+        "luaL_loadbuffer",
+        "lua_pcall"
+    ],
+    "game_version": "1.0.0",
+    "script_environment": "lua51",
+    "process_name": "RobloxPlayerBeta.exe",
+    "window_title": "Roblox"
+} 
