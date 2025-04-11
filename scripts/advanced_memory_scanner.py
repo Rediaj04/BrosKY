@@ -7,19 +7,41 @@ import win32security
 import win32con
 import win32api
 import struct
-from ctypes import wintypes, windll, create_string_buffer, Structure, sizeof, POINTER, c_void_p, c_ulong, c_ulonglong, c_size_t, c_uint32, c_char_p
+from ctypes import wintypes, windll, create_string_buffer, Structure, sizeof, POINTER, c_void_p, c_ulong, c_ulonglong, c_size_t, c_uint32
 import psutil
 import time
 
 # Constantes
-PROCESS_ALL_ACCESS = (0x000F0000 | 0x00100000 | 0xFFF)
 PROCESS_VM_READ = 0x0010
 PROCESS_VM_WRITE = 0x0020
 PROCESS_VM_OPERATION = 0x0008
 PROCESS_QUERY_INFORMATION = 0x0400
-PAGE_EXECUTE_READWRITE = 0x40
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_DUP_HANDLE = 0x0040
 
-# Estructuras
+# Permisos necesarios para leer memoria
+PROCESS_ACCESS = (
+    PROCESS_VM_READ | 
+    PROCESS_QUERY_INFORMATION | 
+    PROCESS_QUERY_LIMITED_INFORMATION |
+    PROCESS_DUP_HANDLE
+)
+
+class SYSTEM_INFO(Structure):
+    _fields_ = [
+        ("wProcessorArchitecture", wintypes.WORD),
+        ("wReserved", wintypes.WORD),
+        ("dwPageSize", wintypes.DWORD),
+        ("lpMinimumApplicationAddress", c_void_p),
+        ("lpMaximumApplicationAddress", c_void_p),
+        ("dwActiveProcessorMask", c_ulong),
+        ("dwNumberOfProcessors", wintypes.DWORD),
+        ("dwProcessorType", wintypes.DWORD),
+        ("dwAllocationGranularity", wintypes.DWORD),
+        ("wProcessorLevel", wintypes.WORD),
+        ("wProcessorRevision", wintypes.WORD)
+    ]
+
 class MEMORY_BASIC_INFORMATION(Structure):
     _fields_ = [
         ("BaseAddress", c_void_p),
@@ -60,9 +82,9 @@ def get_process_handle(pid):
             token, 0, [(priv_id, win32con.SE_PRIVILEGE_ENABLED)]
         )
         
-        # Abrir proceso con acceso completo
+        # Abrir proceso con permisos específicos
         handle = windll.kernel32.OpenProcess(
-            PROCESS_ALL_ACCESS,
+            PROCESS_ACCESS,
             False,
             pid
         )
@@ -76,91 +98,93 @@ def get_process_handle(pid):
         print(f"Error al obtener handle: {e}")
     return None
 
-def inject_dll(process_handle, dll_path):
-    """Inyecta una DLL en el proceso objetivo."""
-    try:
-        # Convertir la ruta de la DLL a formato Unicode
-        dll_path_encoded = dll_path.encode('utf-16le')
-        
-        # Asignar memoria en el proceso objetivo
-        remote_buffer = windll.kernel32.VirtualAllocEx(
-            process_handle,
-            None,
-            len(dll_path_encoded),
-            win32con.MEM_COMMIT | win32con.MEM_RESERVE,
-            win32con.PAGE_READWRITE
-        )
-        
-        if not remote_buffer:
-            print("Error al asignar memoria remota")
-            return False
-        
-        # Escribir la ruta de la DLL en la memoria del proceso
-        written = wintypes.DWORD()
-        if not windll.kernel32.WriteProcessMemory(
-            process_handle,
-            remote_buffer,
-            dll_path_encoded,
-            len(dll_path_encoded),
-            ctypes.byref(written)
-        ):
-            print("Error al escribir en memoria remota")
-            return False
-        
-        # Obtener la dirección de LoadLibraryW
-        load_library = windll.kernel32.GetProcAddress(
-            windll.kernel32.GetModuleHandleW("kernel32.dll"),
-            "LoadLibraryW"
-        )
-        
-        # Crear un hilo remoto para cargar la DLL
-        thread_id = wintypes.DWORD()
-        thread_handle = windll.kernel32.CreateRemoteThread(
-            process_handle,
-            None,
-            0,
-            load_library,
-            remote_buffer,
-            0,
-            ctypes.byref(thread_id)
-        )
-        
-        if not thread_handle:
-            print("Error al crear hilo remoto")
-            return False
-        
-        # Esperar a que el hilo termine
-        windll.kernel32.WaitForSingleObject(thread_handle, -1)
-        
-        # Limpiar
-        windll.kernel32.VirtualFreeEx(
-            process_handle,
-            remote_buffer,
-            0,
-            win32con.MEM_RELEASE
-        )
-        windll.kernel32.CloseHandle(thread_handle)
-        
-        return True
-    except Exception as e:
-        print(f"Error al inyectar DLL: {e}")
-        return False
+def read_memory(handle, address, size):
+    buffer = create_string_buffer(size)
+    bytes_read = c_size_t()
+    
+    if windll.kernel32.ReadProcessMemory(
+        handle, 
+        address, 
+        buffer, 
+        size, 
+        ctypes.byref(bytes_read)
+    ):
+        return buffer.raw[:bytes_read.value]
+    return None
 
-def find_lua_state(process_handle):
-    """Busca el estado de Lua en la memoria del proceso."""
+def find_lua_patterns(process_handle):
+    """Busca patrones de Lua en la memoria del proceso."""
     try:
-        # Patrones para buscar el estado de Lua
+        # Patrones comunes de Lua y Roblox
         patterns = [
             b"Lua 5.1",
             b"LuaQ",
-            b"lua_State"
+            b"luaL_loadbuffer",
+            b"lua_pcall",
+            b"lua_getfield",
+            b"lua_setfield",
+            b"lua_getglobal",
+            b"lua_setglobal",
+            b"ROBLOX",
+            b"RobloxPlayer",
+            b"RobloxGame",
+            b"rbxasset://",
+            b"game:",
+            b"workspace",
+            b"Players",
+            b"LocalPlayer",
+            b"Character",
+            b"Instance.new",
+            b"GetService",
+            b"FireServer",
+            b"InvokeServer",
+            b"RemoteEvent",
+            b"RemoteFunction",
+            b"ReplicatedStorage",
+            b"ServerScriptService",
+            b"LocalScript",
+            b"Script",
+            b"ModuleScript"
         ]
         
         # Obtener información de memoria
         mbi = MEMORY_BASIC_INFORMATION()
         current_address = 0
+        total_regions = 0
+        scanned_regions = 0
+        found_patterns = 0
         
-        while True:
+        print("Escaneando memoria en busca de patrones de Lua...")
+        
+        # Obtener información del sistema
+        system_info = SYSTEM_INFO()
+        windll.kernel32.GetSystemInfo(ctypes.byref(system_info))
+        
+        # Establecer rango de direcciones a escanear
+        min_address = system_info.lpMinimumApplicationAddress
+        max_address = system_info.lpMaximumApplicationAddress
+        
+        print(f"Rango de direcciones a escanear: 0x{min_address:X} - 0x{max_address:X}")
+        
+        # Primero contar las regiones totales
+        current_address = min_address
+        while current_address < max_address:
+            if windll.kernel32.VirtualQueryEx(
+                process_handle,
+                current_address,
+                ctypes.byref(mbi),
+                ctypes.sizeof(mbi)
+            ):
+                if mbi.State == win32con.MEM_COMMIT:
+                    total_regions += 1
+                current_address = mbi.BaseAddress + mbi.RegionSize
+            else:
+                break
+        
+        print(f"Total de regiones de memoria a escanear: {total_regions}")
+        current_address = min_address
+        
+        while current_address < max_address:
             if windll.kernel32.VirtualQueryEx(
                 process_handle,
                 current_address,
@@ -169,53 +193,61 @@ def find_lua_state(process_handle):
             ):
                 if (mbi.State == win32con.MEM_COMMIT and 
                     mbi.Type == win32con.MEM_PRIVATE and 
-                    mbi.Protect & win32con.PAGE_READWRITE):
+                    (mbi.Protect & win32con.PAGE_READWRITE or 
+                     mbi.Protect & win32con.PAGE_READONLY or
+                     mbi.Protect & win32con.PAGE_EXECUTE_READ or
+                     mbi.Protect & win32con.PAGE_EXECUTE_READWRITE)):
                     
-                    # Leer la región de memoria
-                    buffer = create_string_buffer(mbi.RegionSize)
-                    bytes_read = wintypes.SIZE_T()
+                    scanned_regions += 1
+                    if scanned_regions % 10 == 0:
+                        print(f"Progreso: {scanned_regions}/{total_regions} regiones escaneadas")
+                        print(f"Escaneando región: 0x{mbi.BaseAddress:X} - 0x{mbi.BaseAddress + mbi.RegionSize:X}")
                     
-                    if windll.kernel32.ReadProcessMemory(
-                        process_handle,
-                        mbi.BaseAddress,
-                        buffer,
-                        mbi.RegionSize,
-                        ctypes.byref(bytes_read)
-                    ):
-                        # Buscar patrones
-                        for pattern in patterns:
-                            pos = buffer.raw.find(pattern)
-                            if pos != -1:
-                                return mbi.BaseAddress + pos
+                    try:
+                        # Leer la región de memoria en bloques más pequeños
+                        block_size = 0x1000  # 4KB por bloque
+                        for offset in range(0, mbi.RegionSize, block_size):
+                            mem = read_memory(process_handle, mbi.BaseAddress + offset, block_size)
+                            if mem:
+                                # Buscar patrones
+                                for pattern in patterns:
+                                    pos = 0
+                                    while True:
+                                        pos = mem.find(pattern, pos)
+                                        if pos == -1:
+                                            break
+                                        
+                                        addr = mbi.BaseAddress + offset + pos
+                                        found_patterns += 1
+                                        print(f"\nPatrón encontrado ({found_patterns}): {pattern.decode(errors='ignore')}")
+                                        print(f"Dirección: 0x{addr:X}")
+                                        print(f"Región: 0x{mbi.BaseAddress:X} - 0x{mbi.BaseAddress + mbi.RegionSize:X}")
+                                        print(f"Protección: 0x{mbi.Protect:X}")
+                                        
+                                        # Intentar leer contexto
+                                        context = read_memory(process_handle, addr - 32, 64)
+                                        if context:
+                                            try:
+                                                context_str = context.decode('utf-8', errors='ignore')
+                                                print(f"Contexto: {context_str}")
+                                            except:
+                                                print(f"Contexto (hex): {context.hex()}")
+                                        
+                                        pos += len(pattern)
+                    except Exception as e:
+                        print(f"Error al leer región 0x{mbi.BaseAddress:X}: {str(e)}")
                 
                 current_address = mbi.BaseAddress + mbi.RegionSize
             else:
                 break
-    except Exception as e:
-        print(f"Error al buscar estado de Lua: {e}")
-    return None
-
-def hook_lua_functions(process_handle, lua_state):
-    """Instala hooks en funciones de Lua."""
-    try:
-        # Direcciones de funciones de Lua a hook
-        functions = {
-            "luaL_loadbuffer": None,
-            "lua_pcall": None,
-            "lua_getfield": None,
-            "lua_setfield": None
-        }
         
-        # Buscar las funciones en la memoria
-        for func_name in functions:
-            # Aquí iría el código para encontrar las direcciones de las funciones
-            # y establecer los hooks
-            pass
-            
-        return True
+        print(f"\nEscaneo completado:")
+        print(f"Regiones totales: {total_regions}")
+        print(f"Regiones escaneadas: {scanned_regions}")
+        print(f"Patrones encontrados: {found_patterns}")
+                
     except Exception as e:
-        print(f"Error al instalar hooks: {e}")
-        return False
+        print(f"Error al escanear memoria: {str(e)}")
 
 def main():
     if not is_admin():
@@ -256,41 +288,11 @@ def main():
         return
     
     try:
-        # Inyectar DLL de monitoreo
-        dll_path = os.path.join(os.path.dirname(__file__), "monitor.dll")
-        if not os.path.exists(dll_path):
-            print("Error: No se encontró la DLL de monitoreo")
-            return
-            
-        print("Inyectando DLL de monitoreo...")
-        if not inject_dll(process_handle, dll_path):
-            print("Error al inyectar DLL")
-            return
+        # Buscar patrones de Lua
+        find_lua_patterns(process_handle)
         
-        # Buscar estado de Lua
-        print("Buscando estado de Lua...")
-        lua_state = find_lua_state(process_handle)
-        if not lua_state:
-            print("No se encontró el estado de Lua")
-            return
-            
-        print(f"Estado de Lua encontrado en: 0x{lua_state:X}")
-        
-        # Instalar hooks
-        print("Instalando hooks...")
-        if not hook_lua_functions(process_handle, lua_state):
-            print("Error al instalar hooks")
-            return
-            
-        print("Hooks instalados correctamente")
-        print("Monitoreando actividad de Lua...")
-        
-        # Mantener el script ejecutándose
-        while True:
-            time.sleep(1)
-            
     except KeyboardInterrupt:
-        print("\nDeteniendo monitoreo...")
+        print("\nDeteniendo escaneo...")
     finally:
         if process_handle:
             windll.kernel32.CloseHandle(process_handle)

@@ -2,8 +2,6 @@
 #include <iostream>
 #include <fstream>
 #include <string>
-#include <vector>
-#include <TlHelp32.h>
 
 // Estructura para almacenar información de hooks
 struct HookInfo {
@@ -13,95 +11,110 @@ struct HookInfo {
     BYTE hookBytes[5];
 };
 
-// Vector para almacenar los hooks
-std::vector<HookInfo> hooks;
+// Variables globales
+HookInfo luaHooks[4];
+HANDLE hLogFile;
 
 // Función para escribir en el archivo de log
-void Log(const char* message) {
-    std::ofstream logFile("lua_monitor.log", std::ios::app);
-    if (logFile.is_open()) {
-        logFile << message << std::endl;
-        logFile.close();
+void WriteLog(const char* message) {
+    if (hLogFile != INVALID_HANDLE_VALUE) {
+        DWORD bytesWritten;
+        WriteFile(hLogFile, message, strlen(message), &bytesWritten, NULL);
+        WriteFile(hLogFile, "\n", 1, &bytesWritten, NULL);
     }
 }
 
+// Hook para luaL_loadbuffer
+int __stdcall Hook_luaL_loadbuffer(void* L, const char* buff, size_t sz, const char* name) {
+    WriteLog("Interceptado luaL_loadbuffer");
+    WriteLog(buff); // Escribir el código Lua interceptado
+    
+    // Restaurar bytes originales
+    for (int i = 0; i < 5; i++) {
+        ((BYTE*)luaHooks[0].originalFunction)[i] = luaHooks[0].originalBytes[i];
+    }
+    
+    // Llamar a la función original
+    int result = ((int(__stdcall*)(void*, const char*, size_t, const char*))luaHooks[0].originalFunction)(L, buff, sz, name);
+    
+    // Restaurar el hook
+    for (int i = 0; i < 5; i++) {
+        ((BYTE*)luaHooks[0].originalFunction)[i] = luaHooks[0].hookBytes[i];
+    }
+    
+    return result;
+}
+
+// Hook para lua_pcall
+int __stdcall Hook_lua_pcall(void* L, int nargs, int nresults, int errfunc) {
+    WriteLog("Interceptado lua_pcall");
+    
+    // Restaurar bytes originales
+    for (int i = 0; i < 5; i++) {
+        ((BYTE*)luaHooks[1].originalFunction)[i] = luaHooks[1].originalBytes[i];
+    }
+    
+    // Llamar a la función original
+    int result = ((int(__stdcall*)(void*, int, int, int))luaHooks[1].originalFunction)(L, nargs, nresults, errfunc);
+    
+    // Restaurar el hook
+    for (int i = 0; i < 5; i++) {
+        ((BYTE*)luaHooks[1].originalFunction)[i] = luaHooks[1].hookBytes[i];
+    }
+    
+    return result;
+}
+
 // Función para instalar un hook
-bool InstallHook(void* targetFunction, void* hookFunction) {
-    HookInfo hook;
-    hook.originalFunction = targetFunction;
-    hook.hookFunction = hookFunction;
+bool InstallHook(void* targetFunction, void* hookFunction, int hookIndex) {
+    DWORD oldProtect;
     
     // Guardar bytes originales
-    memcpy(hook.originalBytes, targetFunction, 5);
+    for (int i = 0; i < 5; i++) {
+        luaHooks[hookIndex].originalBytes[i] = ((BYTE*)targetFunction)[i];
+    }
     
     // Crear bytes del hook
-    hook.hookBytes[0] = 0xE9; // JMP
+    luaHooks[hookIndex].hookBytes[0] = 0xE9; // JMP
     DWORD relativeAddress = (DWORD)hookFunction - (DWORD)targetFunction - 5;
-    memcpy(&hook.hookBytes[1], &relativeAddress, 4);
+    memcpy(&luaHooks[hookIndex].hookBytes[1], &relativeAddress, 4);
     
     // Aplicar el hook
-    DWORD oldProtect;
     if (VirtualProtect(targetFunction, 5, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        memcpy(targetFunction, hook.hookBytes, 5);
+        for (int i = 0; i < 5; i++) {
+            ((BYTE*)targetFunction)[i] = luaHooks[hookIndex].hookBytes[i];
+        }
         VirtualProtect(targetFunction, 5, oldProtect, &oldProtect);
-        hooks.push_back(hook);
         return true;
     }
     
     return false;
 }
 
-// Función para remover todos los hooks
-void RemoveHooks() {
-    for (const auto& hook : hooks) {
-        DWORD oldProtect;
-        if (VirtualProtect(hook.originalFunction, 5, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-            memcpy(hook.originalFunction, hook.originalBytes, 5);
-            VirtualProtect(hook.originalFunction, 5, oldProtect, &oldProtect);
-        }
-    }
-    hooks.clear();
-}
-
-// Hook para luaL_loadbuffer
-int __stdcall Hook_luaL_loadbuffer(void* L, const char* buff, size_t sz, const char* name) {
-    Log("luaL_loadbuffer llamado");
-    Log(buff); // Log del código Lua
-    
-    // Llamar a la función original
-    typedef int(__stdcall* Original_luaL_loadbuffer)(void*, const char*, size_t, const char*);
-    Original_luaL_loadbuffer original = (Original_luaL_loadbuffer)hooks[0].originalFunction;
-    return original(L, buff, sz, name);
-}
-
-// Hook para lua_pcall
-int __stdcall Hook_lua_pcall(void* L, int nargs, int nresults, int errfunc) {
-    Log("lua_pcall llamado");
-    
-    // Llamar a la función original
-    typedef int(__stdcall* Original_lua_pcall)(void*, int, int, int);
-    Original_lua_pcall original = (Original_lua_pcall)hooks[1].originalFunction;
-    return original(L, nargs, nresults, errfunc);
-}
-
-// Función principal de la DLL
+// Punto de entrada de la DLL
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     switch (reason) {
         case DLL_PROCESS_ATTACH:
-            // Inicializar hooks
-            Log("DLL cargada");
-            
-            // Aquí iría el código para encontrar las direcciones de las funciones
-            // y establecer los hooks
-            // Por ejemplo:
-            // InstallHook((void*)0x12345678, Hook_luaL_loadbuffer);
-            // InstallHook((void*)0x87654321, Hook_lua_pcall);
-            
+            // Crear archivo de log
+            hLogFile = CreateFile("lua_monitor.log", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            WriteLog("DLL cargada correctamente");
             break;
             
         case DLL_PROCESS_DETACH:
-            // Remover hooks
-            RemoveHooks();
-            Log("DLL descargada");
+            // Cerrar archivo de log
+            if (hLogFile != INVALID_HANDLE_VALUE) {
+                CloseHandle(hLogFile);
+            }
             break;
+    }
+    return TRUE;
+}
+
+// Función exportada para iniciar el monitoreo
+extern "C" __declspec(dllexport) bool StartMonitoring() {
+    // Aquí iría el código para encontrar las funciones de Lua y aplicar los hooks
+    // Por ahora, solo escribimos en el log
+    WriteLog("Iniciando monitoreo de Lua");
+    return true;
+}
  
