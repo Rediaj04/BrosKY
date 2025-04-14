@@ -6,4 +6,5 @@ requests==2.31.0
 luaparser==3.1.1
 colorama==0.4.6
 keyboard==0.13.5
-pywin32==310; sys_platform == 'win32' 
+pywin32==310; sys_platform == 'win32'
+ctypes-windows-sdk==1.0.0; sys_platform == 'win32' 
