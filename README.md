@@ -1,62 +1,82 @@
-# Roblox Script Executor
+# BrosKY
 
-Este proyecto es un ejecutor de scripts para juegos basados en Roblox. Permite inyectar y ejecutar scripts Lua en tiempo real en el juego.
-
-## Características
-
-- Interfaz gráfica moderna y fácil de usar
-- Editor de scripts con resaltado de sintaxis para Lua
-- Sistema de gestión de scripts (guardar/cargar)
-- Conexión automática al proceso del juego
-- Ejecución de scripts en tiempo real
-- Sistema de logging para depuración
-
-## Estructura del Proyecto
-
-```
-RobloxExecutor/
-├── config/           # Archivos de configuración
-├── scripts/          # Scripts guardados
-├── src/              # Código fuente
-│   ├── core/         # Núcleo del ejecutor
-│   ├── injection/    # Sistema de inyección
-│   ├── ui/           # Interfaz de usuario
-│   └── utils/        # Utilidades
-└── requirements.txt  # Dependencias
-```
+Herramienta para inyectar y ejecutar scripts en Roblox.
 
 ## Requisitos
 
-- Python 3.7 o superior
+- Python 3.8 o superior
 - Windows 10/11
-- Acceso administrativo
-- Las dependencias listadas en `requirements.txt`
+- Bloxstrap instalado
+- Permisos de administrador
 
 ## Instalación
 
-1. Clona este repositorio
-2. Instala las dependencias:
+1. Clona el repositorio:
+```bash
+git clone https://github.com/tu-usuario/BrosKY.git
+cd BrosKY
+```
+
+2. Crea un entorno virtual:
+```bash
+python -m venv venv
+```
+
+3. Activa el entorno virtual:
+- Windows:
+```bash
+venv\Scripts\activate
+```
+- Linux/Mac:
+```bash
+source venv/bin/activate
+```
+
+4. Instala las dependencias:
 ```bash
 pip install -r requirements.txt
 ```
 
 ## Uso
 
-1. Inicia el juego
-2. Ejecuta el ejecutor:
+1. Asegúrate de que Bloxstrap haya iniciado Roblox
+
+2. Ejecuta el script como administrador:
 ```bash
-python src/main.py
+python scripts/roblox_memory_scanner_new.py
 ```
-3. Conecta al juego usando el botón "Conectar al Juego"
-4. Escribe o carga un script
-5. Haz clic en "Ejecutar Script"
 
-## Notas Importantes
+## Estructura del Proyecto
 
-- Este ejecutor está diseñado para uso con juegos específicos
-- Requiere configuración específica para cada versión del juego
-- El uso de este software es bajo tu propia responsabilidad
+```
+BrosKY/
+├── scripts/           # Scripts de utilidad
+├── src/              # Código fuente principal
+├── config/           # Archivos de configuración
+├── requirements.txt  # Dependencias de Python
+└── README.md         # Este archivo
+```
+
+## Desarrollo
+
+1. Asegúrate de tener todas las dependencias instaladas
+2. Ejecuta los scripts como administrador
+3. Sigue las convenciones de código establecidas
 
 ## Contribución
 
-Las contribuciones son bienvenidas. Por favor, lee el archivo TODO.md para ver las tareas pendientes. 
+1. Fork el repositorio
+2. Crea una rama para tu feature (`git checkout -b feature/AmazingFeature`)
+3. Commit tus cambios (`git commit -m 'Add some AmazingFeature'`)
+4. Push a la rama (`git push origin feature/AmazingFeature`)
+5. Abre un Pull Request
+
+## Licencia
+
+Este proyecto está bajo la Licencia MIT - ver el archivo [LICENSE](LICENSE) para más detalles.
+
+## Notas de Seguridad
+
+- Este proyecto requiere permisos de administrador para funcionar
+- Úsalo de manera responsable y ética
+- No uses para actividades maliciosas o que violen los términos de servicio 
